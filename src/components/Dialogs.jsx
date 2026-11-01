@@ -37,6 +37,9 @@ export function DialogProvider({ children }) {
       confirm: (options) => open('confirm', options),
       // A message with a single button. Resolves when dismissed.
       notify: (options) => open('notify', options),
+      // A text or password field. Resolves with what was typed, or null.
+      // inputLabel, inputType ('text' | 'password'), minLength.
+      prompt: (options) => open('prompt', options),
     }
   }
 
@@ -56,7 +59,7 @@ export function DialogProvider({ children }) {
 
 function Sheet({ request, onSettle }) {
   const { kind, options } = request
-  const { title, message, confirmLabel, cancelLabel = 'Cancel', tone = 'primary', requireText } = options
+  const { title, message, confirmLabel, cancelLabel = 'Cancel', tone = 'primary', requireText, inputLabel, inputType = 'text', minLength = 1, autoComplete = 'off' } = options
   const ref = useRef(null)
   const settled = useRef(false)
   const [closing, setClosing] = useState(false)
@@ -77,8 +80,10 @@ function Sheet({ request, onSettle }) {
     }, CLOSE_MS)
   }
 
-  const cancelValue = kind === 'confirm' ? false : undefined
-  const blocked = Boolean(requireText) && typed.trim() !== requireText
+  const asks = kind === 'confirm' || kind === 'prompt'
+  const cancelValue = kind === 'confirm' ? false : kind === 'prompt' ? null : undefined
+  const blocked = (Boolean(requireText) && typed.trim() !== requireText) || (kind === 'prompt' && typed.length < minLength)
+  const doneValue = kind === 'confirm' ? true : kind === 'prompt' ? typed : undefined
 
   return (
     <dialog
@@ -100,7 +105,7 @@ function Sheet({ request, onSettle }) {
         method="dialog"
         onSubmit={(e) => {
           e.preventDefault()
-          if (!blocked) close(kind === 'confirm' ? true : undefined)
+          if (!blocked) close(doneValue)
         }}
       >
         <span className="sheet-grip" aria-hidden />
@@ -116,12 +121,18 @@ function Sheet({ request, onSettle }) {
             <input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" autoCapitalize="characters" spellCheck={false} />
           </label>
         )}
+        {kind === 'prompt' && (
+          <label className="field">
+            {inputLabel}
+            <input className="input" type={inputType} value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete={autoComplete} autoCapitalize="none" spellCheck={false} autoFocus />
+          </label>
+        )}
         <div className="sheet-actions">
-          <button type="submit" className={`btn big block ${tone === 'danger' ? 'danger-solid' : 'primary'}`} disabled={blocked} autoFocus={!requireText}>
+          <button type="submit" className={`btn big block ${tone === 'danger' ? 'danger-solid' : 'primary'}`} disabled={blocked} autoFocus={!requireText && kind !== 'prompt'}>
             {confirmLabel ?? (kind === 'confirm' ? 'Confirm' : 'OK')}
           </button>
-          {kind === 'confirm' && (
-            <button type="button" className="btn big block ghost" onClick={() => close(false)}>
+          {asks && (
+            <button type="button" className="btn big block ghost" onClick={() => close(cancelValue)}>
               {cancelLabel}
             </button>
           )}

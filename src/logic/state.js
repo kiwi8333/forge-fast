@@ -10,8 +10,10 @@ import {
   initialFasting,
   normalizeFasting,
   restoreFastLog,
+  setFastNotes,
   startFast,
 } from './fasting.js'
+import { validateWindow } from './schedule.js'
 
 export const SCHEMA_VERSION = 1
 export const BACKUP_APP_ID = 'forge-fast'
@@ -20,8 +22,12 @@ export const FORGE_BACKUP_APP_ID = 'forge-bodybuilding'
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
+export const DEFAULT_SETTINGS = { units: 'kg', theme: 'system', window: null }
+export const UNITS = ['kg', 'lb']
+export const THEMES = ['system', 'light', 'dark']
+
 export function createInitialState() {
-  return { version: SCHEMA_VERSION, fasting: initialFasting(), bodyweight: [] }
+  return { version: SCHEMA_VERSION, fasting: initialFasting(), bodyweight: [], settings: { ...DEFAULT_SETTINGS } }
 }
 
 // Local calendar date as YYYY-MM-DD (not UTC, so a late-evening weigh-in counts today).
@@ -60,14 +66,40 @@ export function putBackFastLog(state, log) {
   return { ...state, fasting: restoreFastLog(state.fasting, log) }
 }
 
+export function saveFastNotes(state, id, notes) {
+  return { ...state, fasting: setFastNotes(state.fasting, id, notes) }
+}
+
+// ---------- Settings ----------
+
+export function setUnits(state, units) {
+  if (!UNITS.includes(units)) throw new Error('Choose kg or lb.')
+  return { ...state, settings: { ...state.settings, units } }
+}
+
+export function setTheme(state, theme) {
+  if (!THEMES.includes(theme)) throw new Error('Choose a theme.')
+  return { ...state, settings: { ...state.settings, theme } }
+}
+
+export function setEatingWindow(state, win) {
+  return { ...state, settings: { ...state.settings, window: validateWindow(win) } }
+}
+
 // ---------- Weight ----------
+
+// Weights are stored in kg; these convert for people who think in pounds.
+export const KG_PER_LB = 0.45359237
+export const toDisplay = (kg, units) => (units === 'lb' ? Math.round((kg / KG_PER_LB) * 10) / 10 : kg)
+export const fromDisplay = (value, units) => (units === 'lb' ? Number(value) * KG_PER_LB : Number(value))
 
 export function addBodyweight(state, date, kg) {
   const value = Number(kg)
   if (!DATE_RE.test(date)) throw new Error('Pick a valid date.')
   if (!Number.isFinite(value) || value < 25 || value > 300) throw new Error('Weight must be between 25 and 300 kg.')
   const rest = state.bodyweight.filter((e) => e.date !== date)
-  const bodyweight = [...rest, { date, kg: Math.round(value * 10) / 10 }].sort((a, b) => a.date.localeCompare(b.date))
+  // Two decimals, so a weight typed in pounds comes back exactly (180 lb, not 179.9).
+  const bodyweight = [...rest, { date, kg: Math.round(value * 100) / 100 }].sort((a, b) => a.date.localeCompare(b.date))
   return { ...state, bodyweight }
 }
 
@@ -92,6 +124,23 @@ function checkBodyweight(list, path = 'bodyweight') {
   })
 }
 
+// Settings were added after the first release; missing ones take defaults.
+function checkSettings(raw) {
+  if (raw === undefined) return { ...DEFAULT_SETTINGS }
+  if (!isObj(raw)) fail('settings', 'invalid')
+  const units = raw.units ?? DEFAULT_SETTINGS.units
+  const theme = raw.theme ?? DEFAULT_SETTINGS.theme
+  if (!UNITS.includes(units)) fail('settings.units', 'invalid')
+  if (!THEMES.includes(theme)) fail('settings.theme', 'invalid')
+  let win = null
+  try {
+    win = validateWindow(raw.window ?? null)
+  } catch (err) {
+    fail('settings.window', err.message)
+  }
+  return { units, theme, window: win }
+}
+
 /**
  * Checks stored or restored data thoroughly and returns a clean copy.
  * Throws a readable message on anything malformed, so bad data is rejected
@@ -100,7 +149,7 @@ function checkBodyweight(list, path = 'bodyweight') {
 export function normalizeState(raw) {
   if (!isObj(raw)) fail('root', 'not an object')
   if (raw.version !== SCHEMA_VERSION) fail('version', `expected ${SCHEMA_VERSION}, got ${JSON.stringify(raw.version)}`)
-  return { version: SCHEMA_VERSION, fasting: normalizeFasting(raw.fasting, fail), bodyweight: checkBodyweight(raw.bodyweight) }
+  return { version: SCHEMA_VERSION, fasting: normalizeFasting(raw.fasting, fail), bodyweight: checkBodyweight(raw.bodyweight), settings: checkSettings(raw.settings) }
 }
 
 // ---------- Backup ----------

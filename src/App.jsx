@@ -1,5 +1,5 @@
-import { lazy, Suspense } from 'react'
-import { Navigate, NavLink, Route, Routes, useLocation } from 'react-router-dom'
+import { lazy, Suspense, useEffect } from 'react'
+import { NavLink, navigate, useRoute } from './lib/router.jsx'
 import { useStore } from './store/StoreContext.jsx'
 import { HistoryIcon, SettingsIcon, TimerIcon } from './components/icons.jsx'
 import Timer from './pages/Timer.jsx'
@@ -16,6 +16,8 @@ const NAV = [
   { to: '/settings', label: 'Settings', Icon: SettingsIcon },
 ]
 
+const PAGES = { '/': Timer, '/history': History, '/settings': Settings }
+
 const pageFallback = (
   <section className="card">
     <SkeletonRows count={3} label="Loading page" />
@@ -23,8 +25,25 @@ const pageFallback = (
 )
 
 export default function App() {
-  const { loadError, readOnly, saveError, dismissLoadError } = useStore()
-  const location = useLocation()
+  const { state, loadError, readOnly, saveError, dismissLoadError } = useStore()
+  const { path } = useRoute()
+  const known = PAGES[path]
+
+  // Unknown paths go back to the timer.
+  useEffect(() => {
+    if (!known) navigate('/', { replace: true })
+  }, [known])
+
+  // The chosen theme; "system" leaves it to the phone's setting.
+  const theme = state.settings.theme
+  useEffect(() => {
+    const root = document.documentElement
+    if (theme === 'system') delete root.dataset.theme
+    else root.dataset.theme = theme
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'light' ? '#f4f3ef' : '#111315')
+  }, [theme])
+
+  const Page = known ?? Timer
 
   return (
     <>
@@ -45,14 +64,9 @@ export default function App() {
           </div>
         )}
         {/* Keyed by path so each page plays the entry animation. */}
-        <div className="route" key={location.pathname}>
+        <div className="route" key={path}>
           <Suspense fallback={pageFallback}>
-            <Routes>
-              <Route path="/" element={<Timer />} />
-              <Route path="/history" element={<History />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
+            <Page />
           </Suspense>
         </div>
       </main>

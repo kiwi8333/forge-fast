@@ -1,8 +1,13 @@
-import { useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { navigate } from '../lib/router.jsx'
 import { useStore } from '../store/StoreContext.jsx'
-import { createInitialState, dateKey, importFromForge, parseBackupFile, serializeBackup } from '../logic/state.js'
+import { THEMES, UNITS, createInitialState, dateKey, importFromForge, parseBackupFile, serializeBackup, setEatingWindow, setTheme, setUnits } from '../logic/state.js'
+import { windowHours } from '../logic/schedule.js'
 import { useDialogs } from '../components/Dialogs.jsx'
+import { MIN_PASSWORD, decryptBackup, encryptBackup, isEncryptedBackup } from '../lib/backupCrypto.js'
+import { requestPersistence, storageStatus } from '../lib/persist.js'
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 function Status({ status }) {
   if (!status) return null
@@ -15,15 +20,59 @@ function Status({ status }) {
 
 export default function Settings() {
   const { state, apply, replaceAll } = useStore()
-  const { confirm } = useDialogs()
-  const navigate = useNavigate()
+  const { confirm, prompt } = useDialogs()
   const fileRef = useRef(null)
   const [status, setStatus] = useState(null)
+  const [protect, setProtect] = useState(true)
+  const [storage, setStorage] = useState(null)
+  const win = state.settings.window
+  const [winForm, setWinForm] = useState(() => win ?? { start: '12:00', end: '20:00' })
+  const [winStatus, setWinStatus] = useState(null)
+
+  function saveWindow(e) {
+    e.preventDefault()
+    try {
+      apply((s) => setEatingWindow(s, winForm))
+      setWinStatus({ ok: true, text: `Saved: eat for ${windowHours(winForm)} hours, fast for ${24 - windowHours(winForm)}.` })
+    } catch (err) {
+      setWinStatus({ ok: false, text: err.message })
+    }
+  }
+
+  useEffect(() => {
+    storageStatus().then(setStorage)
+  }, [])
+
+  // Asks for a new backup password twice. Resolves with it, or null if cancelled.
+  async function newPassword() {
+    const first = await prompt({
+      title: 'Protect your backup',
+      message: `Choose a password of at least ${MIN_PASSWORD} characters. You need it to restore; it cannot be recovered if you forget it.`,
+      inputLabel: 'Password',
+      inputType: 'password',
+      minLength: MIN_PASSWORD,
+      autoComplete: 'new-password',
+      confirmLabel: 'Next',
+    })
+    if (first === null) return null
+    const again = await prompt({ title: 'Type it again', inputLabel: 'Password', inputType: 'password', minLength: 1, autoComplete: 'new-password', confirmLabel: 'Back up' })
+    if (again === null) return null
+    if (again !== first) {
+      setStatus({ ok: false, text: 'The passwords did not match. Nothing was saved; try again.' })
+      return null
+    }
+    return first
+  }
 
   async function exportBackup() {
     setStatus(null)
-    const text = serializeBackup(state)
-    const filename = `forge-fast-backup-${dateKey()}.json`
+    let text = serializeBackup(state)
+    if (protect) {
+      const password = await newPassword()
+      if (password === null) return
+      text = await encryptBackup(text, password)
+    }
+    const filename = `forge-fast-backup-${dateKey()}${protect ? '-locked' : ''}.json`
     const blob = new Blob([text], { type: 'application/json' })
     try {
       const file = new File([blob], filename, { type: 'application/json' })
@@ -56,14 +105,20 @@ export default function Settings() {
     if (file.size > 150 * 1024 * 1024) return setStatus({ ok: false, text: 'That file is too large to be a backup.' })
     let parsed
     try {
-      parsed = parseBackupFile(await file.text())
+      let text = await file.text()
+      if (isEncryptedBackup(text)) {
+        const password = await prompt({ title: 'Enter the backup password', inputLabel: 'Password', inputType: 'password', autoComplete: 'current-password', confirmLabel: 'Unlock' })
+        if (password === null) return
+        text = await decryptBackup(text, password)
+      }
+      parsed = parseBackupFile(text)
     } catch (err) {
       return setStatus({ ok: false, text: `Nothing was changed. ${err.message}` })
     }
     if (parsed.kind === 'restore') {
       const ok = await confirm({
         title: 'Replace all data with this backup?',
-        message: `Everything here is replaced by the backup (${parsed.state.fasting.logs.length} fasts, ${parsed.state.bodyweight.length} weigh-ins). This cannot be undone.`,
+        message: `Everything here is replaced by the backup (${plural(parsed.state.fasting.logs.length, 'fast')}, ${plural(parsed.state.bodyweight.length, 'weigh-in')}). This cannot be undone.`,
         confirmLabel: 'Restore backup',
         tone: 'danger',
       })
@@ -73,7 +128,7 @@ export default function Settings() {
     }
     const ok = await confirm({
       title: 'Import from Forge?',
-      message: `This backup has ${parsed.fasting.logs.length} fasts and ${parsed.bodyweight.length} weigh-ins. They are added to what is here; nothing is overwritten or duplicated.`,
+      message: `This backup has ${plural(parsed.fasting.logs.length, 'fast')} and ${plural(parsed.bodyweight.length, 'weigh-in')}. They are added to what is here; nothing is overwritten or duplicated.`,
       confirmLabel: 'Import',
     })
     if (!ok) return
@@ -85,7 +140,7 @@ export default function Settings() {
     })
     setStatus({
       ok: true,
-      text: `Imported ${added.fasts} fast${added.fasts === 1 ? '' : 's'} and ${added.weights} weigh-in${added.weights === 1 ? '' : 's'}${added.active ? ', plus your running fast' : ''}.`,
+      text: `Imported ${plural(added.fasts, 'fast')} and ${plural(added.weights, 'weigh-in')}${added.active ? ', plus your running fast' : ''}.`,
     })
   }
 
@@ -109,6 +164,65 @@ export default function Settings() {
         <h1>Settings</h1>
       </div>
 
+      <form className="card" onSubmit={saveWindow}>
+        <div className="stack" style={{ gap: 4 }}>
+          <h2>Eating window</h2>
+          <p className="small text-2">The hours you usually eat. The timer then shows when your window opens and closes, so you know when to start each fast.</p>
+        </div>
+        <div className="grid-2">
+          <label className="field">
+            Opens
+            <input className="input" type="time" value={winForm.start} onChange={(e) => setWinForm((w) => ({ ...w, start: e.target.value }))} required />
+          </label>
+          <label className="field">
+            Closes
+            <input className="input" type="time" value={winForm.end} onChange={(e) => setWinForm((w) => ({ ...w, end: e.target.value }))} required />
+          </label>
+        </div>
+        <div className="row wrap" style={{ gap: 8 }}>
+          <button className="btn primary" type="submit">
+            Save window
+          </button>
+          {win && (
+            <button
+              className="btn ghost"
+              type="button"
+              onClick={() => {
+                apply((s) => setEatingWindow(s, null))
+                setWinStatus({ ok: true, text: 'Eating window turned off.' })
+              }}
+            >
+              Turn off
+            </button>
+          )}
+        </div>
+        <Status status={winStatus} />
+      </form>
+
+      <section className="card">
+        <h2>Display</h2>
+        <div className="stack" style={{ gap: 6 }}>
+          <span className="coach-label">Weight units</span>
+          <div className="segmented" role="radiogroup" aria-label="Weight units">
+            {UNITS.map((u) => (
+              <button key={u} type="button" role="radio" aria-checked={state.settings.units === u} className={state.settings.units === u ? 'on' : ''} onClick={() => apply((s) => setUnits(s, u))}>
+                {u}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="stack" style={{ gap: 6 }}>
+          <span className="coach-label">Theme</span>
+          <div className="segmented" role="radiogroup" aria-label="Theme">
+            {THEMES.map((t) => (
+              <button key={t} type="button" role="radio" aria-checked={state.settings.theme === t} className={state.settings.theme === t ? 'on' : ''} onClick={() => apply((s) => setTheme(s, t))}>
+                {t === 'system' ? 'Auto' : t === 'light' ? 'Light' : 'Dark'}
+              </button>
+            ))}
+          </div>
+        </div>
+      </section>
+
       <section className="card">
         <div className="stack" style={{ gap: 4 }}>
           <h2>Moving from Forge?</h2>
@@ -127,6 +241,10 @@ export default function Settings() {
           <h2>Backup</h2>
           <p className="small text-2">Your fasts live only on this phone. Back them up to Google Drive, Files (iCloud) or email now and then.</p>
         </div>
+        <label className="row small">
+          <input type="checkbox" checked={protect} onChange={(e) => setProtect(e.target.checked)} style={{ width: 22, height: 22, accentColor: 'var(--accent)' }} />
+          Protect the backup with a password (recommended)
+        </label>
         <div className="row wrap" style={{ gap: 8 }}>
           <button className="btn primary" onClick={exportBackup}>
             Back up now
@@ -137,6 +255,25 @@ export default function Settings() {
         </div>
         <input ref={fileRef} type="file" accept="application/json,.json" onChange={onFile} hidden />
         <Status status={status} />
+      </section>
+
+      <section className="card">
+        <div className="row between">
+          <h2>Storage</h2>
+          <span className={`pill ${storage === 'granted' ? 'good' : storage === 'denied' ? 'warn' : ''}`}>
+            {storage === 'granted' ? 'Protected' : storage === 'denied' ? 'Not protected' : storage === 'unsupported' ? 'Unknown' : '…'}
+          </span>
+        </div>
+        <p className="small text-2">
+          {storage === 'granted'
+            ? 'Your browser has agreed to keep Forge Fast’s data, even when the phone is low on space.'
+            : 'Browsers can clear website data when space runs low, or after a week without a visit on iPhone. Add Forge Fast to your home screen and keep backups.'}
+        </p>
+        {storage === 'denied' && (
+          <button className="btn small" style={{ alignSelf: 'flex-start' }} onClick={() => requestPersistence().then(setStorage)}>
+            Ask again
+          </button>
+        )}
       </section>
 
       <section className="card">

@@ -15,7 +15,7 @@ const at = (s) => new Date(s)
 
 describe('weight', () => {
   it('logs one weigh-in per day, rounded, and validates it', () => {
-    let s = addBodyweight(createInitialState(), '2026-10-30', '82.46')
+    let s = addBodyweight(createInitialState(), '2026-10-30', '82.468')
     s = addBodyweight(s, '2026-10-30', 82.1)
     expect(s.bodyweight).toEqual([{ date: '2026-10-30', kg: 82.1 }])
     expect(() => addBodyweight(s, '2026-10-31', 10)).toThrow(/between/)

@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { HashRouter } from 'react-router-dom'
 import { registerSW } from 'virtual:pwa-register'
+import { requestPersistence } from './lib/persist.js'
 // Display font for headings and big numbers, bundled so it works offline.
 import '@fontsource/barlow-condensed/latin-600.css'
 import '@fontsource/barlow-condensed/latin-700.css'
@@ -15,20 +15,19 @@ import { ToastProvider } from './components/Toasts.jsx'
 // Wires up update checks so new deploys reach the installed app.
 registerSW({ immediate: true })
 
-// HashRouter: GitHub Pages has no server-side rewrites, so deep links like
-// /history would 404 on refresh with BrowserRouter.
+// Ask the browser not to clear saved data (best effort; see lib/persist.js).
+requestPersistence()
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <ErrorBoundary>
-      <HashRouter>
-        <StoreProvider>
-          <DialogProvider>
-            <ToastProvider>
-              <App />
-            </ToastProvider>
-          </DialogProvider>
-        </StoreProvider>
-      </HashRouter>
+      <StoreProvider>
+        <DialogProvider>
+          <ToastProvider>
+            <App />
+          </ToastProvider>
+        </DialogProvider>
+      </StoreProvider>
     </ErrorBoundary>
   </StrictMode>,
 )

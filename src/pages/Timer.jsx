@@ -1,8 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { Link, navigate, useRoute } from '../lib/router.jsx'
 import { useStore } from '../store/StoreContext.jsx'
 import { FAST_PLANS, FAST_STAGES, MAX_CUSTOM_HOURS, MIN_CUSTOM_HOURS, fastStats, formatClockHours, formatDuration, hoursBetween, planHours, stageAt, stageTimes } from '../logic/fasting.js'
-import { abandonFast, beginFast, changeFastStart, finishFast, setFastPlan } from '../logic/state.js'
+import { abandonFast, beginFast, changeFastStart, finishFast, saveFastNotes, setFastPlan } from '../logic/state.js'
+import { windowStatus } from '../logic/schedule.js'
+import { newlyEarned } from '../logic/achievements.js'
+import FastNotes from '../components/FastNotes.jsx'
+import { shareFast } from '../lib/shareCard.js'
 import { useNow } from '../components/useNow.js'
 import FastOrbit from '../components/FastOrbit.jsx'
 import { useDialogs } from '../components/Dialogs.jsx'
@@ -11,7 +15,7 @@ import { haptic } from '../lib/alerts.js'
 import { dayOf, timeOf, toLocalInput } from '../lib/time.js'
 
 // The fasting plans, as a grid of chips.
-function PlanPicker({ fasting, onPick }) {
+const PlanPicker = memo(function PlanPicker({ fasting, onPick }) {
   const [custom, setCustom] = useState(String(fasting.customHours))
   const [error, setError] = useState(null)
   return (
@@ -65,7 +69,7 @@ function PlanPicker({ fasting, onPick }) {
       {error && <p className="error">{error}</p>}
     </div>
   )
-}
+})
 
 // The stages as a strip: where you are now, and how far through.
 function StageStrip({ hours }) {
@@ -100,6 +104,9 @@ export default function Timer() {
   const [startInput, setStartInput] = useState('')
   const [showStages, setShowStages] = useState(false)
   const [burstKey, setBurstKey] = useState(0)
+  // Fasts whose "how did it go?" card was closed this session.
+  const [notesClosed, setNotesClosed] = useState(() => new Set())
+  const { query } = useRoute()
 
   const elapsed = active ? hoursBetween(active.startedAt, now) : 0
   const goal = active ? active.targetHours : planHours(f)
@@ -135,6 +142,34 @@ export default function Timer() {
     lastStage.current = stage.id
   }, [active, stage, toast])
 
+  // Stable, so the memoised plan picker skips the once-a-second clock renders.
+  const pickPlan = useCallback((id, hours) => apply((s) => setFastPlan(s, id, hours)), [apply])
+
+  // Home-screen shortcuts open #/?do=start or #/?do=end.
+  const shortcut = query.get('do')
+  useEffect(() => {
+    if (!shortcut) return
+    navigate('/', { replace: true })
+    if (shortcut === 'start' && !state.fasting.active) {
+      try {
+        apply((s) => beginFast(s))
+        haptic('success')
+        toast({ message: 'Fast started' })
+      } catch {
+        // Already running or otherwise not startable: just show the timer.
+      }
+    }
+    if (shortcut === 'end' && state.fasting.active) end()
+    // Runs once per shortcut visit.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [shortcut])
+
+  const win = state.settings.window
+  const winNow = win ? windowStatus(win, new Date(now)) : null
+
+  // The latest fast, if it ended in the last 12 hours and has no notes yet.
+  const notesLog = last && !last.notes && !notesClosed.has(last.id) && now - new Date(last.endedAt).getTime() < 12 * 3600000 ? last : null
+
   const act = (fn) => {
     try {
       apply(fn)
@@ -153,7 +188,20 @@ export default function Timer() {
       confirmLabel: 'End fast',
       cancelLabel: 'Keep fasting',
     })
-    if (ok && act((s) => finishFast(s))) haptic(short ? 'tap' : 'success')
+    if (!ok) return
+    const before = state.fasting.logs
+    let next
+    try {
+      next = apply((s) => finishFast(s))
+    } catch (err) {
+      return notify({ title: 'That didn’t work', message: err.message })
+    }
+    haptic(short ? 'tap' : 'success')
+    const badges = newlyEarned(before, next.fasting.logs)
+    if (badges.length) {
+      setTimeout(() => toast({ message: `Badge earned: ${badges.map((b) => b.title).join(', ')}` }), 600)
+      haptic('complete')
+    }
   }
 
   async function cancel() {
@@ -201,6 +249,13 @@ export default function Timer() {
         <p className="hint" style={{ textAlign: 'center' }}>
           Tap or hold the ring for {active ? 'when you reach each stage' : 'the fasting stages'}.
         </p>
+        {winNow && (
+          <p className={`window-line ${winNow.open ? 'open' : ''}`}>
+            {winNow.open
+              ? `Eating window open · closes ${timeOf(winNow.closesAt.toISOString())}${active ? '' : ', start your fast then'}`
+              : `Eating window opens ${timeOf(winNow.opensAt.toISOString())}${dayOf(winNow.opensAt.toISOString()) !== dayOf(new Date(now).toISOString()) ? ` ${dayOf(winNow.opensAt.toISOString())}` : ''}`}
+          </p>
+        )}
         {showStages && (
           <ol className="clean stage-times" aria-label="Fasting stages">
             {(active ? stageTimes(active.startedAt, new Date(now)) : FAST_STAGES).map((s) => (
@@ -278,7 +333,7 @@ export default function Timer() {
           </>
         ) : (
           <>
-            <PlanPicker fasting={f} onPick={(id, hours) => apply((s) => setFastPlan(s, id, hours))} />
+            <PlanPicker fasting={f} onPick={pickPlan} />
             <button className="btn primary big block" onClick={() => act((s) => beginFast(s)) && haptic('success')}>
               Start {goal ? `${goal}h` : 'open'} fast
             </button>
@@ -288,6 +343,26 @@ export default function Timer() {
           </>
         )}
       </section>
+
+      {!active && notesLog && (
+        <section className="card">
+          <div className="row between">
+            <h2>How did it go?</h2>
+            <button className="link-btn" onClick={() => shareFast(notesLog).catch(() => {})}>
+              Share
+            </button>
+          </div>
+          <p className="small text-2">
+            {formatDuration(hoursBetween(notesLog.startedAt, notesLog.endedAt))} fasted. A few taps now show what works best for you in History.
+          </p>
+          <FastNotes
+            onSave={(n) => {
+              if (act((s) => saveFastNotes(s, notesLog.id, n))) toast({ message: 'Saved' })
+            }}
+            onSkip={() => setNotesClosed((set) => new Set(set).add(notesLog.id))}
+          />
+        </section>
+      )}
 
       {active && (
         <section className="card">
@@ -308,7 +383,7 @@ export default function Timer() {
       {active && (
         <section className="card">
           <h2>Change plan</h2>
-          <PlanPicker fasting={f} onPick={(id, hours) => apply((s) => setFastPlan(s, id, hours))} />
+          <PlanPicker fasting={f} onPick={pickPlan} />
         </section>
       )}
 

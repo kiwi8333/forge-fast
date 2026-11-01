@@ -1,5 +1,7 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+// Preact with its React-compatible layer: the app is written against React's
+// API, but ships Preact (about a tenth of the size).
+import preact from '@preact/preset-vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // Content Security Policy, injected into index.html for production builds
@@ -37,7 +39,7 @@ const base = '/forge-fast/'
 export default defineConfig({
   base,
   plugins: [
-    react(),
+    preact(),
     cspPlugin(),
     VitePWA({
       registerType: 'autoUpdate',
@@ -56,6 +58,12 @@ export default defineConfig({
         orientation: 'portrait',
         start_url: base,
         scope: base,
+        // Long-press the home-screen icon for these (Android; iOS ignores them).
+        shortcuts: [
+          { name: 'Start fast', short_name: 'Start', url: `${base}#/?do=start`, icons: [{ src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' }] },
+          { name: 'End fast', short_name: 'End', url: `${base}#/?do=end`, icons: [{ src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' }] },
+          { name: 'History', short_name: 'History', url: `${base}#/history`, icons: [{ src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' }] },
+        ],
         icons: [
           { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
@@ -66,5 +74,6 @@ export default defineConfig({
   ],
   test: {
     environment: 'node',
+    include: ['src/**/*.test.js'],
   },
 })

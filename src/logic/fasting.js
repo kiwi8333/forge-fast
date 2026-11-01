@@ -203,6 +203,30 @@ export function formatClockHours(hours) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
+// ---------- Notes on a finished fast ----------
+
+const SCALE = (v, label) => {
+  if (v === null || v === undefined || v === '') return null
+  const n = Number(v)
+  if (!Number.isInteger(n) || n < 1 || n > 5) throw new Error(`${label} must be from 1 to 5.`)
+  return n
+}
+
+/** mood, energy and hunger from 1 to 5, glasses of water, and a short note. */
+export function validateNotes(notes) {
+  if (!notes || typeof notes !== 'object') throw new Error('Invalid notes.')
+  const water = notes.water === null || notes.water === undefined || notes.water === '' ? null : Number(notes.water)
+  if (water !== null && (!Number.isInteger(water) || water < 0 || water > 30)) throw new Error('Water must be 0 to 30 glasses.')
+  const text = typeof notes.text === 'string' ? notes.text.trim().slice(0, 280) : ''
+  return { mood: SCALE(notes.mood, 'Mood'), energy: SCALE(notes.energy, 'Energy'), hunger: SCALE(notes.hunger, 'Hunger'), water, text }
+}
+
+export function setFastNotes(fasting, id, notes) {
+  if (!fasting.logs.some((l) => l.id === id)) throw new Error('That fast is no longer in your history.')
+  const clean = validateNotes(notes)
+  return { ...fasting, logs: fasting.logs.map((l) => (l.id === id ? { ...l, notes: clean } : l)) }
+}
+
 /** Validates stored or restored fasting data and returns a clean copy. */
 export function normalizeFasting(raw, fail) {
   if (raw === undefined) return initialFasting()
@@ -223,7 +247,13 @@ export function normalizeFasting(raw, fail) {
     if (!l || typeof l.id !== 'string' || !isIso(l.startedAt) || !isIso(l.endedAt)) fail(p, 'invalid entry')
     if (Date.parse(l.endedAt) < Date.parse(l.startedAt)) fail(p, 'ends before it starts')
     if (!isTarget(l.targetHours ?? null)) fail(`${p}.targetHours`, 'invalid')
-    return { id: l.id, startedAt: l.startedAt, endedAt: l.endedAt, targetHours: l.targetHours ?? null, planId: FAST_PLANS.some((x) => x.id === l.planId) ? l.planId : 'open' }
+    const base = { id: l.id, startedAt: l.startedAt, endedAt: l.endedAt, targetHours: l.targetHours ?? null, planId: FAST_PLANS.some((x) => x.id === l.planId) ? l.planId : 'open' }
+    if (l.notes === undefined || l.notes === null) return base
+    try {
+      return { ...base, notes: validateNotes(l.notes) }
+    } catch (err) {
+      return fail(`${p}.notes`, err.message)
+    }
   })
   return { planId: raw.planId, customHours, active, logs }
 }
